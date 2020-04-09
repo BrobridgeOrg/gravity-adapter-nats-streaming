@@ -10,6 +10,7 @@ import (
 
 	pb "gravity-adapter-nats-streaming/pb"
 
+	"github.com/flyaways/pool"
 	"github.com/nats-io/stan.go"
 	log "github.com/sirupsen/logrus"
 	"github.com/sony/sonyflake"
@@ -24,11 +25,40 @@ type Packet struct {
 
 type Client struct {
 	Info      *SourceInfo
+	grpcPool  *pool.GRPCPool
 	Connector stan.Conn
 }
 
 func CreateClient() *Client {
-	return &Client{}
+
+	address := viper.GetString("dsa.host")
+
+	options := &pool.Options{
+		InitTargets:  []string{address},
+		InitCap:      5,
+		MaxCap:       30,
+		DialTimeout:  time.Second * 5,
+		IdleTimeout:  time.Second * 60,
+		ReadTimeout:  time.Second * 5,
+		WriteTimeout: time.Second * 5,
+	}
+
+	// Initialize connection pool
+	p, err := pool.NewGRPCPool(options, grpc.WithInsecure())
+
+	if err != nil {
+		log.Printf("%#v\n", err)
+		return nil
+	}
+
+	if p == nil {
+		log.Printf("p= %#v\n", p)
+		return nil
+	}
+
+	return &Client{
+		grpcPool: p,
+	}
 }
 
 func (client *Client) Connect(host string, port int, params map[string]interface{}) error {
@@ -130,14 +160,13 @@ func (client *Client) HandleMessage(m *stan.Msg) {
 		Payload:   string(payload),
 	}
 
-	// Set up a connection to data soource adapter.
-	address := viper.GetString("dsa.host")
-	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+	// Getting connection from pool
+	conn, err := client.grpcPool.Get()
 	if err != nil {
-		log.Error("did not connect: ", err)
+		log.Error("Failed to get connection: ", err)
 		return
 	}
-	defer conn.Close()
+	defer client.grpcPool.Put(conn)
 
 	// Preparing context
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

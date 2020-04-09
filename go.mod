@@ -3,6 +3,7 @@ module gravity-adapter-nats-streaming
 go 1.13
 
 require (
+	github.com/flyaways/pool v1.0.1
 	github.com/golang/protobuf v1.3.5
 	github.com/nats-io/nats-server/v2 v2.1.6 // indirect
 	github.com/nats-io/nats-streaming-server v0.17.0 // indirect
