@@ -121,13 +121,13 @@ func (client *Client) Subscribe() error {
 
 	durableName, ok := client.Info.Params["durable_name"]
 	if !ok {
-		if _, err := client.Connector.Subscribe(channel.(string), client.HandleMessage); err != nil {
+		if _, err := client.Connector.Subscribe(channel.(string), client.HandleMessage, stan.SetManualAckMode()); err != nil {
 			return err
 		}
 
 	} else {
 
-		if _, err := client.Connector.Subscribe(channel.(string), client.HandleMessage, stan.DurableName(durableName.(string))); err != nil {
+		if _, err := client.Connector.Subscribe(channel.(string), client.HandleMessage, stan.DurableName(durableName.(string)), stan.SetManualAckMode()); err != nil {
 			return err
 		}
 	}
@@ -142,16 +142,19 @@ func (client *Client) HandleMessage(m *stan.Msg) {
 	// Parse JSON
 	err := json.Unmarshal(m.Data, &packet)
 	if err != nil {
+		m.Ack()
 		return
 	}
 
 	log.WithFields(log.Fields{
 		"event": packet.EventName,
+		"seq":   m.Sequence,
 	}).Info("Received event")
 
 	// Convert payload to JSON string
 	payload, err := json.Marshal(packet.Payload)
 	if err != nil {
+		m.Ack()
 		return
 	}
 
@@ -181,5 +184,8 @@ func (client *Client) HandleMessage(m *stan.Msg) {
 
 	if resp.Success == false {
 		log.Error("Failed to push message to data source adapter")
+		return
 	}
+
+	m.Ack()
 }
