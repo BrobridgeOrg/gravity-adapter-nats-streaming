@@ -19,7 +19,7 @@ import (
 )
 
 type Packet struct {
-	EventName string      `json:"eventName"`
+	EventName string      `json:"event"`
 	Payload   interface{} `json:"payload"`
 }
 
