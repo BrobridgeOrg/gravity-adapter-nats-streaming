@@ -11,6 +11,7 @@ import (
 	pb "gravity-adapter-nats-streaming/pb"
 
 	"github.com/flyaways/pool"
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/stan.go"
 	log "github.com/sirupsen/logrus"
 	"github.com/sony/sonyflake"
@@ -24,6 +25,7 @@ type Packet struct {
 }
 
 type Client struct {
+	ID        string
 	Info      *SourceInfo
 	grpcPool  *pool.GRPCPool
 	Connector stan.Conn
@@ -56,9 +58,63 @@ func CreateClient() *Client {
 		return nil
 	}
 
+	// Generate client ID
+	clientID := viper.GetString("event_store.client_name")
+	if len(clientID) == 0 {
+
+		// Genereate a unique ID for instance
+		flake := sonyflake.NewSonyflake(sonyflake.Settings{})
+		id, err := flake.NextID()
+		if err != nil {
+			return nil
+		}
+
+		clientID = strconv.FormatUint(id, 16)
+	}
+
 	return &Client{
+		ID:       clientID,
 		grpcPool: p,
 	}
+}
+
+func (client *Client) onReconnected(natsConn *nats.Conn) {
+
+	for {
+		log.Warn("re-connect to event server")
+
+		// Initializing NATS Streaming
+		err := client.initSTAN(natsConn)
+		if err != nil {
+			log.Error("Failed to connect to event server")
+			time.Sleep(time.Duration(1) * time.Second)
+			continue
+		}
+
+		break
+	}
+}
+
+func (client *Client) initSTAN(natsConn *nats.Conn) error {
+
+	clusterID, ok := client.Info.Params["cluster_id"]
+	if !ok {
+		return nil
+	}
+
+	// Connect to NATS Streaming
+	sc, err := stan.Connect(
+		clusterID.(string),
+		client.ID,
+		stan.NatsConn(natsConn),
+	)
+	if err != nil {
+		return err
+	}
+
+	client.Connector = sc
+
+	return nil
 }
 
 func (client *Client) Connect(host string, port int, params map[string]interface{}) error {
@@ -73,41 +129,42 @@ func (client *Client) Connect(host string, port int, params map[string]interface
 		client.Info.Params[key] = value
 	}
 
+	// required cluster ID
 	clusterID, ok := params["cluster_id"]
 	if !ok {
 		return nil
 	}
 
+	// required channel
 	channel, ok := client.Info.Params["channel"]
 	if !ok {
 		return errors.New("channel is required")
 	}
 
-	// Genereate a unique ID for instance
-	flake := sonyflake.NewSonyflake(sonyflake.Settings{})
-	id, err := flake.NextID()
-	if err != nil {
-		return nil
-	}
-
-	idStr := strconv.FormatUint(id, 16)
-
 	log.WithFields(log.Fields{
 		"host":       host,
-		"clientName": idStr,
+		"clientName": client.ID,
 		"clusterID":  clusterID,
 		"channel":    channel,
 	}).Info("Connecting to source")
 
+	// Create NATS connection
 	uri := fmt.Sprintf("%s:%d", host, port)
-
-	// Connect to queue server
-	sc, err := stan.Connect(clusterID.(string), idStr, stan.NatsURL(uri))
+	nc, err := nats.Connect(uri,
+		nats.PingInterval(10*time.Second),
+		nats.MaxPingsOutstanding(3),
+		nats.MaxReconnects(-1),
+		nats.ReconnectHandler(client.onReconnected),
+	)
 	if err != nil {
 		return err
 	}
 
-	client.Connector = sc
+	// Initializing NATS Streaming
+	err = client.initSTAN(nc)
+	if err != nil {
+		return err
+	}
 
 	return nil
 }
